@@ -39,6 +39,7 @@
     <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="GPU2.cs" />
     <Compile Include="main.cs" />
     <Compile Include="GPU.cs" />
     <Compile Include="GBEmu.cs" />
