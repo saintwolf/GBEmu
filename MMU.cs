@@ -287,8 +287,7 @@ namespace GBEmu
                 // Video/Graphics RAM
                 case 0x8000: goto case 0x9000;
                 case 0x9000:
-                    GPU.vram[addr - 0x8000] = val;
-                    //GPU.updateTile(addr, val);
+                    GPU.vram[addr & 0x1FFF] = val;
                     break;
 
                 // External RAM

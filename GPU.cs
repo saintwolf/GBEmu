@@ -10,9 +10,15 @@ namespace GBEmu
 {
     class GPU
     {
-        private static Surface display = null;
+        private enum ModeFlags
+        {
+            HBlank = 0,
+            VBlank = 1,
+            OAMRead = 2, // Searching OAM ram
+            OAMWrite = 3 // Writing OAM data to display driver
+        }
 
-        public static Bitmap fb = new Bitmap(160, 144);
+        private static Surface display = null;
 
         // LCD Control 0xFF40
         public static bool LcdEnable = false; // FALSE=OFF TRUE=ON
@@ -40,13 +46,10 @@ namespace GBEmu
         public static byte[] vram = new byte[0x2000];
         public static byte[] oam = new byte[0xA0];
 
-        public static byte[][][] tileset;
+        public static byte[] lineBuffer = new byte[160];
 
         static GPU()
         {
-            scanRow = new int[161];
-            for (int i = 0; i < 161; i++) GPU.scanRow[i] = 0;
-
             pal[0] = Color.Black;
             pal[1] = Color.LightGray;
             pal[2] = Color.Gray;
@@ -60,50 +63,6 @@ namespace GBEmu
 
         public static void reset()
         {
-            GPU.tileset = null;
-            GPU.tileset = new byte[512][][];
-            for (int t = 0; t < 512; t++)
-            {
-                tileset[t] = new byte[8][];
-                for (int y = 0; y < 8; y++)
-                {
-                    tileset[t][y] = new byte[8];
-                    for (int x = 0; x < 8; x++)
-                    {
-                        tileset[t][y][x] = 0;
-                    }
-                }
-            }
-            for (int i = 0; i < 384; i++)
-            {
-                for (int j = 0; j < 8; j++)
-                {
-                    for (int k = 0; k < 8; k++)
-                    {
-                        GPU.tileset[i][j][k] = 0;
-                    }
-                }
-            }
-
-            if (display != null)
-            {
-                Color[,] colorBlock = new Color[1, 1];
-                colorBlock[0, 0] = Color.Green;
-
-                // Set the pixels in the framebuffer to white and push to screen
-                for (int r = 0; r < 144; r++)
-                {
-                    for (int c = 0; c < 160; c++)
-                    {
-                        
-                                display.SetPixels(new Point(c, r), colorBlock);
-                                //fb.SetPixel(c, r, Color.Blue);
-                    }
-                }
-                //displa0y.BeginInvoke(new Action(() => updateDisplay() ));
-                display.Update();
-            }
-
             GPU.curLine = 0;
             GPU.curScan = 0;
             GPU.lineMode = 2;
@@ -111,10 +70,9 @@ namespace GBEmu
             GPU.yScrl = 0;
             GPU.xScrl = 0;
             GPU.raster = 0;
-
         }
 
-        public static void step()
+        public unsafe static void step()
         {
             GPU.modeClock += Z80.Registers.m;
             switch (GPU.lineMode)
@@ -131,13 +89,24 @@ namespace GBEmu
 
                 // VRAM read mode, scanline active
                 case 3:
-                    if (GPU.modeClock >= 172)
-                    {
-                        // Enter hblank
-                        GPU.modeClock = 0;
-                        GPU.lineMode = 0;
 
-                    }
+                        if (GPU.modeClock >= 172)
+                        {
+                            // Enter hblank
+                            GPU.modeClock = 0;
+                            GPU.lineMode = 0;
+
+
+                            GPU.renderScan();
+                            UInt32 color;
+                            UInt32* pixels = (UInt32*)display.Pixels;
+                            for (int i = 0; i < 160; i++)
+                            {
+                                color = (UInt32)(pal[lineBuffer[i]].ToArgb());
+                                pixels[(curLine * display.Width) + i] = color;
+                            }
+                        }
+
                     break;
 
                 // HBlank
@@ -151,6 +120,7 @@ namespace GBEmu
                             // Enter VBlank
                             GPU.lineMode = 1;
 
+                            display.Update();
 
                         }
                         //display.Invoke(new UpdateDisplayDelegate(updateDisplay));
@@ -182,37 +152,6 @@ namespace GBEmu
                         }
                     }
                     break;
-            }
-        }
-
-        public static Bitmap Update()
-        {
-            using (Graphics g = Graphics.FromImage(fb))
-            {
-                if (LcdEnable)
-                {
-                    //Graphics g = Graphics.FromImage(fb);
-                    if (BgEnable)
-                        g.DrawImage(RenderBg(), new Point(0, 0));
-                }
-            }
-            return fb;
-        }
-
-        // Takes a value written to VRAM and updates the internal tile data set
-        public static void updateTile(UInt16 addr, byte val)
-        {
-            addr &= 0x1FFF;
-
-            var saddr = addr;
-            if ((addr & 1) != 0) { saddr--; addr--; }
-            var tile = (addr >> 4) & 511;
-            var y = (addr >> 1) & 7;
-            int sx;
-            for (var x = 0; x < 8; x++)
-            {
-                sx = 1 << (7 - x);
-                GPU.tileset[tile][y][x] = (byte)(((GPU.vram[saddr] & sx) != 0 ? 1 : 0) | ((GPU.vram[saddr + 1] & sx) != 0 ? 2 : 0));
             }
         }
 
@@ -294,8 +233,8 @@ namespace GBEmu
                         switch ((val >> (i * 2)) & 3)
                         {
                             case 0: GPU.pal[i] = System.Drawing.Color.White; break;
-                            case 1: GPU.pal[i] = System.Drawing.Color.Black; break;
-                            case 2: GPU.pal[i] = System.Drawing.Color.Black; break;
+                            case 1: GPU.pal[i] = System.Drawing.Color.LightGray; break;
+                            case 2: GPU.pal[i] = System.Drawing.Color.DarkGray; break;
                             case 3: GPU.pal[i] = System.Drawing.Color.Black; break;
                         }
                     }
@@ -303,162 +242,53 @@ namespace GBEmu
             }
         }
 
-        private static Bitmap GetTile(int addr, bool transparent = false)
+        public static void renderScan()
         {
-            using (Bitmap bmp = new Bitmap(8, 8))
+            // VRAM offset for the tile map
+            UInt16 mapOffs = (UInt16)(curLine + yScrl);
+
+            mapOffs &= 0xFF;
+            mapOffs >>= 3;
+            mapOffs <<= 5;
+
+            UInt16 lineOffs = (UInt16)((xScrl >> 3) & 31);
+
+            UInt16 index = BgTileMapSelect ? MMU.readByte((UInt16)((mapOffs + lineOffs) + 0x8800)) : MMU.readByte((UInt16)((mapOffs + lineOffs) + 0x8800));
+
+            // Where in the tile to start
+            byte x = (byte)(xScrl & 7);
+            byte y = (byte)((curLine + yScrl) & 7);
+
+            if (!TileDataSelect)
             {
-                int y = 0;
-
-                for (int i = 0; i < 16; i += 2)
-                {
-                    byte b1, b2;
-                    b1 = vram[addr + 2 * y];
-                    b2 = vram[addr + 1 + 2 * y];
-
-                    for (int j = 0; j < 8; j++)
-                    {
-                        int color = (((b2 >> (7 - j)) & 1) << 1) + ((b1 >> (7 - j)) & 1);
-                        if (color == 0 && transparent)
-                        {
-                            bmp.SetPixel(j, y, pal[color]);
-                        }
-                        else
-                        {
-                            bmp.SetPixel(j, y, pal[color]);
-                        }
-                    }
-                    y++;
-                }
-
-                return (Bitmap)bmp.Clone();
+                if (index < 128) index += 128;
+                else index -= 128;
             }
-        }
 
-        private static Bitmap RenderBg()
-        {
-            using (Bitmap map = new Bitmap(255, 255))
+            for (int i = 0; i < 160; i++)
             {
-                using (Bitmap bg = new Bitmap(160, 144))
+                //get 16-bit tile data
+                UInt16 tile = TileDataSelect ? MMU.readWord((UInt16)((index << 1) + 0x8000)) : MMU.readWord((UInt16)((index << 1) + 0x8800));
+
+                //mask all but 0xnn where n = 'pixel number'
+                //then add the 2 bits
+                byte a = (byte)(((tile & 0xFF) & (1 << x)) >> x);
+                byte b = (byte)(((tile >> 8) & (1 << x)) >> x);
+                byte c = (byte)(a + (b >> 1));
+
+
+                // Write to linebuffer
+                GPU.lineBuffer[i] = c;
+
+                // Increment x pixel within tile
+                x++;
+
+                if (x == 8)
                 {
-                    using (Graphics g = Graphics.FromImage(map))
-                    {
-                        // Generate map
-                        int tmap = BgTileMapSelect ? 0x1C00 : 0x1800;
-                        int x = 0, y = 0;
-                        for (int i = 0; i < 32 * 32; i++)
-                        {
-                            if (x == 32)
-                            {
-                                x = 0;
-                                y++;
-                            }
-                            if (!TileDataSelect)
-                            {
-                                int value = vram[tmap + i];
-                                int addr;
-                                if (value > 0x7F) // It's signed!
-                                {
-                                    value -= 256;
-                                }
-                                addr = 0x1000 + (value * 16);
-
-                                using (Bitmap tile = GetTile(addr))
-                                {
-                                    g.DrawImage(tile, new Point(x * 8, y * 8));
-                                    //display.Blit(new Surface(GetTile(vram[tmap + i] * 16)), new Point(x * 8, y * 8));
-                                }
-                            }
-                            else
-                            {
-                                using (Bitmap tile = GetTile(vram[tmap + i] * 16))
-                                {
-                                    g.DrawImage(tile, new Point(x * 8, y * 8));
-                                    //display.Blit(new Surface(GetTile(vram[tmap + i] * 16)), new Point(x * 8, y * 8));
-                                }
-                            }
-                            x++;
-                        }
-
-                        // Scroll
-                        for (y = 0; y < 144; y++)
-                        {
-                            for (x = 0; x < 160; x++)
-                            {
-                                int srcx = xScrl + x;
-                                int srcy = yScrl + y;
-
-                                if (srcx >= 255)
-                                    srcx = srcx - 255;
-
-                                if (srcy >= 255)
-                                    srcy = srcy - 255;
-
-                                bg.SetPixel(x, y, map.GetPixel(srcx, srcy));
-                            }
-                        }
-
-                        return (Bitmap)bg.Clone();
-                    }
-                }
-            }
-        }
-
-        private Bitmap RenderWindow()
-        {
-            using (Bitmap map = new Bitmap(255, 255))
-            {
-                using (Graphics g = Graphics.FromImage(map))
-                {
-                    // Generate map
-                    int tmap = WindowTileMapSelect ? 0x1C00 : 0x1800;
-                    int x = 0, y = 0;
-                    for (int i = 0; i < 32 * 32; i++)
-                    {
-                        if (x == 32)
-                        {
-                            x = 0;
-                            y++;
-                        }
-                        if (!TileDataSelect)
-                        {
-                            int value = vram[tmap + i];
-                            int addr;
-                            if (value > 0x7F) // It's signed!
-                            {
-                                value -= 256;
-                            }
-                            addr = 0x1000 + (value * 16);
-                            g.DrawImage(GetTile(addr), new Point(x * 8, y * 8));
-                        }
-                        else
-                        {
-                            g.DrawImage(GetTile(vram[tmap + i] * 16), new Point(x * 8, y * 8));
-                        }
-                        x++;
-                    }
-                    return (Bitmap)map.Clone();
-                }
-            }
-        }
-
-        private Bitmap RenderObj()
-        {
-            using (Bitmap obj = new Bitmap(160, 144))
-            {
-                using (Graphics g = Graphics.FromImage(obj))
-                {
-                    for (int i = 0; i < 40; i++)
-                    {
-                        int addr = i * 4;
-                        int x = oam[addr + 1];
-                        int y = oam[addr];
-                        if (x > 0 && x < 168 && y > 0 && y < 160) // Sprite is visible
-                        {
-                            obj.SetPixel(x, y, Color.Red);
-                            //g.DrawImage(GetTile((OAM[addr + 2] * 16) & 0xFE, OBP0), new Point(x, y));
-                        }
-                    }
-                    return (Bitmap)obj.Clone();
+                    //Reset x pixel within tile, get new tile data
+                    x = 0;
+                    lineOffs = (UInt16)((lineOffs + 1) & 31);
+                    index = BgTileMapSelect ? vram[(mapOffs + lineOffs) + 0x1C00] : vram[(mapOffs + lineOffs) + 0x1800];
                 }
             }
         }

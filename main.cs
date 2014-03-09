@@ -25,6 +25,7 @@ namespace GBEmu
             Video.WindowIcon();
             screen = Video.SetVideoMode(width, height);
             GPU.setDisplay(screen);
+
         }
 
         private void KeyDown(object sender, KeyboardEventArgs e)
@@ -39,18 +40,23 @@ namespace GBEmu
 
         private void Tick(object sender, TickEventArgs e)
         {
-            using (Bitmap b = ResizeImage(GPU.Update(), 4))
+            /*
+            for (int i = 0; i < 144; i++)
             {
+                renderScan(i);
+            }
+
                 if (GPU.lineMode != 1)
                 {
-                    using (Surface s = new Surface(b))
+                    using (Surface s = new Surface(ResizeImage(GPU.fb, 4)))
                     {
                         screen.Blit(s);
+                        s.Close();
+                        screen.Update();
                     }
-
-                    screen.Update();
-                }
             }
+             */
+            
         }
 
         private void Go()
@@ -141,17 +147,24 @@ namespace GBEmu
 
         private Bitmap ResizeImage(Bitmap originalImage, int factor)
         {
-            Bitmap newImage = new Bitmap(originalImage.Width * factor, originalImage.Height * factor);
-            Graphics g = Graphics.FromImage(newImage);
-            for (int y = 0; y < originalImage.Height; y++)
+            using (Bitmap newImage = new Bitmap(originalImage.Width * factor, originalImage.Height * factor))
             {
-                for (int x = 0; x < originalImage.Width; x++)
+                using (Graphics g = Graphics.FromImage(newImage))
                 {
-                    SolidBrush brush = new SolidBrush(originalImage.GetPixel(x, y));
-                    g.FillRectangle(brush, new Rectangle(x * factor, y * factor, factor, factor));
+                    for (int y = 0; y < originalImage.Height; y++)
+                    {
+                        for (int x = 0; x < originalImage.Width; x++)
+                        {
+                            using (SolidBrush brush = new SolidBrush(originalImage.GetPixel(x, y)))
+                            {
+                                g.FillRectangle(brush, new Rectangle(x * factor, y * factor, factor, factor));
+                            }
+                        }
+                    }
                 }
+                return (Bitmap)newImage.Clone();
             }
-            return newImage;
         }
+
     }
 }
