@@ -39,24 +39,7 @@ namespace GBEmu
         }
 
         private void Tick(object sender, TickEventArgs e)
-        {
-            /*
-            for (int i = 0; i < 144; i++)
-            {
-                renderScan(i);
-            }
-
-                if (GPU.lineMode != 1)
-                {
-                    using (Surface s = new Surface(ResizeImage(GPU.fb, 4)))
-                    {
-                        screen.Blit(s);
-                        s.Close();
-                        screen.Update();
-                    }
-            }
-             */
-            
+        {            
         }
 
         private void Go()
